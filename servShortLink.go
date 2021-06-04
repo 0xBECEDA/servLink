@@ -7,6 +7,7 @@ import
     "net/http"
     "encoding/base64"
     "net/url"
+    "os/exec"
 )
 
 const hashLength = 4
@@ -49,6 +50,12 @@ func generateShortURL (link string) string {
 
     return encoded[:hashLength]
 }
+func getStat( w http.ResponseWriter, r *http.Request ) {
+    hash, _ := getHashFromRequest( r )
+    urlRequest := "http://localhost:8080/get_link_statistiсs?" + baseUrl + hash
+    exec.Command("xdg-open", urlRequest).Start()
+}
+
 func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
 
     hash, err := getHashFromRequest( r )
@@ -58,18 +65,28 @@ func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
         cnt := getLinkCnt( encHash )
 
         if cnt >= 0 {
-            fmt.Printf("Адрес %s посещали %d раз \n", baseUrl + encHash, cnt )
+            str := fmt.Sprintf("Адрес %s посещали %d раз \n", baseUrl + hash, cnt)
+            w.Write([]byte(str))
 
         } else {
-            fmt.Printf("Адрес %s не существует в системе\n", baseUrl + encHash )
+            http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
         }
     } else {
+        http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
         fmt.Println(err)
     }
 }
 
 func sentFront( w http.ResponseWriter, r *http.Request ) {
     http.ServeFile(w , r, "front.html")
+}
+
+func checkQuery( w http.ResponseWriter, r *http.Request ) {
+    if len(r.URL.RawQuery) <= 0 {
+        sentFront(w, r)
+    } else {
+        redirect(w, r)
+    }
 }
 func registerNewLink( w http.ResponseWriter, r *http.Request ) {
 
@@ -122,6 +139,7 @@ func redirect( w http.ResponseWriter, r *http.Request ) {
             http.Redirect(w, r, shortUrl, http.StatusNotFound)
         }
     } else {
+        http.Redirect(w, r, link, http.StatusNotFound)
         fmt.Println(err)
     }
 }
@@ -135,14 +153,15 @@ func main () {
     }
 
     // обработчики запросов:
-    // - перейти по короткой ссылке
-    http.HandleFunc("/", redirect)
-    // - запросить хтмл
-    http.HandleFunc("/serv_link/", sentFront)
+    // - проверить, хочет юзер перейти по короткой ссылке или запрашивает фронтенд
+    // сервиса
+    http.HandleFunc("/", checkQuery)
     // - получить новую короткую ссылку
     http.HandleFunc("/reg_new_link/", registerNewLink)
     // - получить статистику переходов по короткой ссылке
     http.HandleFunc("/get_link_statistiсs/", getLinkStatistiсs)
+    // открыть новую вкладку и перенаправить в нее вывод статистики посещений
+    http.HandleFunc("/get_stat/", getStat)
 
     //запускаем сервер
     s.ListenAndServe()
