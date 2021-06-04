@@ -6,6 +6,7 @@ import
     "net/http/httptest"
     "testing"
     "io"
+    "fmt"
 )
 
 // проверяет перенаправление с короткого урла на
@@ -28,7 +29,7 @@ func redirectTest( t *testing.T, link string, expectedStatus int) {
 }
 
 func getCntGoogleCom( t *testing.T, expected string ) {
-    req, err := http.NewRequest("GET", "/get_link_statistiсs/" + "?Url=" + "http://localhost:8080/?u=rGu2", nil)
+    req, err := http.NewRequest("GET", "/get_link_statistiсs/" + "?Url=" + baseUrl + "rGu2", nil)
 
     if err != nil {
         t.Fatal(err)
@@ -78,8 +79,7 @@ func TestGoogleCom(t *testing.T) {
         if err != nil {
             t.Fatal(err)
         }
-
-        expected:= "Короткая ссылка для https://www.google.com - http://localhost:8080/?u=rGu2 \n"
+        expected := fmt.Sprintf("Короткая ссылка для https://www.google.com - %s \n", baseUrl + "rGu2")
         got := string(body)
 
         if expected != got {
@@ -87,9 +87,12 @@ func TestGoogleCom(t *testing.T) {
                 expected, got)
         }
 
-        getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 0 раз \n")
-        redirectTest(t, "http://localhost:8080/?u=rGu2", http.StatusSeeOther )
-        getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 1 раз \n")
+        expected  = fmt.Sprintf("Адрес %s посещали 0 раз \n", baseUrl + "rGu2")
+        getCntGoogleCom(t, expected)
+        expected  = fmt.Sprintf("%s", baseUrl + "rGu2")
+        redirectTest(t, expected, http.StatusSeeOther )
+        expected  = fmt.Sprintf("Адрес %s посещали 1 раз \n", baseUrl + "rGu2")
+        getCntGoogleCom(t, expected)
     }
 }
 

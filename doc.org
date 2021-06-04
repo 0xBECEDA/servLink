@@ -52,6 +52,8 @@ server-side-render на golang/templates, можно любой js-фреймв�
 
 #+NAME: _generateShortURL
 #+BEGIN_SRC go :noweb yes
+  // генерирует хэшот длинной ссылки и обрезает его до
+  // значения hashLength
   func generateShortURL (link string) string {
 
       sum := sha256.Sum256( []byte( link ) )
@@ -135,6 +137,8 @@ SHA-256 выполняет это требование.
 #+BEGIN_SRC go :noweb yes
   <<_pack>>
 
+  // структура - содердимое записи хэш-таблицы
+  // харнит в себе блинный урл и счетчик посещений
   type fullUrl struct {
       Cnt int
       Url string
@@ -153,6 +157,9 @@ SHA-256 выполняет это требование.
 
 #+NAME: _getFullUrl
 #+BEGIN_SRC go :noweb yes
+  // возвращает длинную ссылку для заданной короткой ссылки,
+  // если такая есть в системе.
+  // возвращает короткую ссылку и статус
   func getFullUrl( shortUrl string ) (string, int) {
 
       val, ok := tableOfLinks[shortUrl]
@@ -161,9 +168,9 @@ SHA-256 выполняет это требование.
           // увеличивает счетик посещений
           val.Cnt += 1
           tableOfLinks[shortUrl] = val
-          return val.Url, 303
+          return val.Url, http.StatusSeeOther
       }
-      return "", 404
+      return "", http.StatusNotFound
   }
 
   <<_getLinkCnt>>
@@ -174,6 +181,7 @@ SHA-256 выполняет это требование.
 
 #+NAME: _getLinkCnt
 #+BEGIN_SRC go :noweb yes
+  // получает счетчик посещений короткой ссылки
   func getLinkCnt( shortUrl string ) int {
 
       val, ok := tableOfLinks[shortUrl]
@@ -204,6 +212,9 @@ SHA-256 выполняет это требование.
 
 #+NAME: _registerNewLink
 #+BEGIN_SRC go :noweb yes
+  // завоит новую запись в хэш-таблице для заданной длинной ссылки
+  // и генерирует короткую ссылку
+  // вовзвращает короткую ссылку пользователю
   func registerNewLink( w http.ResponseWriter, r *http.Request ) {
 
       query, _ := url.QueryUnescape(r.URL.RawQuery)
@@ -236,6 +247,7 @@ SHA-256 выполняет это требование.
 #+BEGIN_SRC go :noweb yes
   <<_getHashFromRequestError>>
 
+  // получает хэш из запроса
   func getHashFromRequest( r *http.Request ) (string, error) {
 
       if (len(r.URL.RawQuery) > hashLength) {
@@ -252,6 +264,7 @@ SHA-256 выполняет это требование.
 
 #+NAME: _getHashFromRequestError
 #+BEGIN_SRC go :noweb yes
+  // реализация ошибки получения хэша из параметров (query) запроса
   type getHashFromRequestError struct {
       s string
   }
@@ -273,8 +286,10 @@ SHA-256 выполняет это требование.
 
 #+NAME: _redirect
 #+BEGIN_SRC go :noweb yes
+
   <<_getHashFromRequest>>
 
+  // выполняет перенаправление с короткой ссылки на длинную
   func redirect( w http.ResponseWriter, r *http.Request ) {
 
       link, err := getHashFromRequest( r )
@@ -293,7 +308,6 @@ SHA-256 выполняет это требование.
           fmt.Println(err)
       }
   }
-
   <<getLinkStatistics>>
 #+END_SRC
 
@@ -311,8 +325,11 @@ SHA-256 выполняет это требование.
 
 #+NAME: _getLinkStatistics
 #+BEGIN_SRC go :noweb yes
+
   <<_getLinkStatisticsRedirect>>
 
+  // получает статистику посещений для заданной в запросе короткой ссылке
+  // и отвечает на запрос либо строкой с кол-во посещений, либо ошибкой 404
   func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
 
       hash, err := getHashFromRequest( r )
@@ -326,10 +343,10 @@ SHA-256 выполняет это требование.
               w.Write([]byte(str))
 
           } else {
-              http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
+              http.Redirect(w, r, baseUrl, http.StatusNotFound)
           }
       } else {
-          http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
+          http.Redirect(w, r, baseUrl, http.StatusNotFound)
           fmt.Println(err)
       }
   }
@@ -405,10 +422,15 @@ SHA-256 выполняет это требование.
       "encoding/base64"
       "net/url"
       "os/exec"
+      "log"
   )
 
+  // длина хэша
   const hashLength = 4
-  const baseUrl = "http://localhost:8080/?u="
+  // порт
+  const port = ":8080"
+  // базовый урл - нужен для построения коротких ссылок
+  var baseUrl = "http://localhost" + port + "/?u="
 #+END_SRC
 
 ** main
@@ -419,14 +441,14 @@ SHA-256 выполняет это требование.
 
 #+NAME: _main
 #+BEGIN_SRC go :noweb yes
+
   <<_registerNewLink>>
 
   <<_redirect>>
-
   func main () {
 
       s := &http.Server{
-          Addr:           ":8080",
+          Addr:           port,
       }
 
       // обработчики запросов:
@@ -441,13 +463,14 @@ SHA-256 выполняет это требование.
       http.HandleFunc("/get_stat/", getStat)
 
       //запускаем сервер
-      s.ListenAndServe()
+      log.Fatal(s.ListenAndServe())
   }
 #+END_SRC
 
 #+NAME: tangle
 #+BEGIN_SRC asm :tangle servShortLink.go :noweb tangle :exports code :padline no :comments none
   <<_data>>
+
   <<_generateShortURL>>
   <<_getLinkStatistics>>
   <<_main>>
@@ -506,6 +529,7 @@ SHA-256 выполняет это требование.
       "net/http/httptest"
       "testing"
       "io"
+      "fmt"
   )
 
   <<_redirectTest>>
@@ -560,7 +584,7 @@ SHA-256 выполняет это требование.
 #+NAME: _getCntGoogleCom
 #+BEGIN_SRC go :noweb yes
   func getCntGoogleCom( t *testing.T, expected string ) {
-      req, err := http.NewRequest("GET", "/get_link_statistiсs/" + "?Url=" + "http://localhost:8080/?u=rGu2", nil)
+      req, err := http.NewRequest("GET", "/get_link_statistiсs/" + "?Url=" + baseUrl + "rGu2", nil)
 
       if err != nil {
           t.Fatal(err)
@@ -621,8 +645,7 @@ SHA-256 выполняет это требование.
           if err != nil {
               t.Fatal(err)
           }
-
-          expected:= "Короткая ссылка для https://www.google.com - http://localhost:8080/?u=rGu2 \n"
+          expected := fmt.Sprintf("Короткая ссылка для https://www.google.com - %s \n", baseUrl + "rGu2")
           got := string(body)
 
           if expected != got {
@@ -630,9 +653,12 @@ SHA-256 выполняет это требование.
                   expected, got)
           }
 
-          getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 0 раз \n")
-          redirectTest(t, "http://localhost:8080/?u=rGu2", http.StatusSeeOther )
-          getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 1 раз \n")
+          expected  = fmt.Sprintf("Адрес %s посещали 0 раз \n", baseUrl + "rGu2")
+          getCntGoogleCom(t, expected)
+          expected  = fmt.Sprintf("%s", baseUrl + "rGu2")
+          redirectTest(t, expected, http.StatusSeeOther )
+          expected  = fmt.Sprintf("Адрес %s посещали 1 раз \n", baseUrl + "rGu2")
+          getCntGoogleCom(t, expected)
       }
   }
 

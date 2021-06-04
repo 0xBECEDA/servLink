@@ -8,11 +8,18 @@ import
     "encoding/base64"
     "net/url"
     "os/exec"
+    "log"
 )
 
+// длина хэша
 const hashLength = 4
-const baseUrl = "http://localhost:8080/?u="
+// порт
+const port = ":8080"
+// базовый урл - нужен для построения коротких ссылок
+var baseUrl = "http://localhost" + port + "/?u="
 
+// структура - содердимое записи хэш-таблицы
+// харнит в себе блинный урл и счетчик посещений
 type fullUrl struct {
     Cnt int
     Url string
@@ -21,6 +28,9 @@ type fullUrl struct {
 // таблица ссылок
 var tableOfLinks = make( map[string]fullUrl )
 
+// возвращает длинную ссылку для заданной короткой ссылки,
+// если такая есть в системе.
+// возвращает короткую ссылку и статус
 func getFullUrl( shortUrl string ) (string, int) {
 
     val, ok := tableOfLinks[shortUrl]
@@ -29,11 +39,12 @@ func getFullUrl( shortUrl string ) (string, int) {
         // увеличивает счетик посещений
         val.Cnt += 1
         tableOfLinks[shortUrl] = val
-        return val.Url, 303
+        return val.Url, http.StatusSeeOther
     }
-    return "", 404
+    return "", http.StatusNotFound
 }
 
+// получает счетчик посещений короткой ссылки
 func getLinkCnt( shortUrl string ) int {
 
     val, ok := tableOfLinks[shortUrl]
@@ -42,6 +53,9 @@ func getLinkCnt( shortUrl string ) int {
     }
     return -1
 }
+
+// генерирует хэшот длинной ссылки и обрезает его до
+// значения hashLength
 func generateShortURL (link string) string {
 
     sum := sha256.Sum256( []byte( link ) )
@@ -50,12 +64,15 @@ func generateShortURL (link string) string {
 
     return encoded[:hashLength]
 }
+
 func getStat( w http.ResponseWriter, r *http.Request ) {
     hash, _ := getHashFromRequest( r )
     urlRequest := "http://localhost:8080/get_link_statistiсs?" + baseUrl + hash
     exec.Command("xdg-open", urlRequest).Start()
 }
 
+// получает статистику посещений для заданной в запросе короткой ссылке
+// и отвечает на запрос либо строкой с кол-во посещений, либо ошибкой 404
 func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
 
     hash, err := getHashFromRequest( r )
@@ -69,10 +86,10 @@ func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
             w.Write([]byte(str))
 
         } else {
-            http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
+            http.Redirect(w, r, baseUrl, http.StatusNotFound)
         }
     } else {
-        http.Redirect(w, r, "http://localhost8080", http.StatusNotFound)
+        http.Redirect(w, r, baseUrl, http.StatusNotFound)
         fmt.Println(err)
     }
 }
@@ -88,6 +105,10 @@ func checkQuery( w http.ResponseWriter, r *http.Request ) {
         redirect(w, r)
     }
 }
+
+// завоит новую запись в хэш-таблице для заданной длинной ссылки
+// и генерирует короткую ссылку
+// вовзвращает короткую ссылку пользователю
 func registerNewLink( w http.ResponseWriter, r *http.Request ) {
 
     query, _ := url.QueryUnescape(r.URL.RawQuery)
@@ -106,6 +127,8 @@ func registerNewLink( w http.ResponseWriter, r *http.Request ) {
     }
 }
 
+
+// реализация ошибки получения хэша из параметров (query) запроса
 type getHashFromRequestError struct {
     s string
 }
@@ -114,6 +137,7 @@ func (e *getHashFromRequestError) Error() string {
     return e.s
 }
 
+// получает хэш из запроса
 func getHashFromRequest( r *http.Request ) (string, error) {
 
     if (len(r.URL.RawQuery) > hashLength) {
@@ -125,6 +149,7 @@ func getHashFromRequest( r *http.Request ) (string, error) {
     }
 }
 
+// выполняет перенаправление с короткой ссылки на длинную
 func redirect( w http.ResponseWriter, r *http.Request ) {
 
     link, err := getHashFromRequest( r )
@@ -144,12 +169,10 @@ func redirect( w http.ResponseWriter, r *http.Request ) {
     }
 }
 
-
-
 func main () {
 
     s := &http.Server{
-        Addr:           ":8080",
+        Addr:           port,
     }
 
     // обработчики запросов:
@@ -164,5 +187,5 @@ func main () {
     http.HandleFunc("/get_stat/", getStat)
 
     //запускаем сервер
-    s.ListenAndServe()
+    log.Fatal(s.ListenAndServe())
 }
