@@ -1,0 +1,626 @@
+* Интро
+Реализация тестового задания
+
+* Задание
+Необходимо реализовать сервис коротких ссылок.
+
+Требования к функциональности:
+Сервис должен позволять выполнять следующие действия через HTTP:
+- добавлять новую короткую ссылку (на вход получает полный URL, в ответе
+сервис отдаёт новую короткую ссылку)
+- перейти по короткой ссылке и получить редирект на полную ссылку
+- если указанная короткая ссылка не существует в системе, то отдавать 404
+- просмотреть статистику по посещениям:
+- общее количество запросов на переход по короткой ссылке
+- статистику по посещениям можно писать в консоль или предоставить
+отдельную HTTP-API, которая отдаст текущее значение счётчика
+посещений (редиректов)
+
+Ограничения к системе:
+Код должен быть рабочим, запускаемым, обязательно с инструкцией по
+запуску.
+Для реализации можно использовать любые возможности языка go 1.14 и выше
+и любые вендорные библиотеки. Карту со ссылками можно хранить как в базе
+данных, так и в памяти приложения (на усмотрение кандидата).
+Если сервис хранит все данные в памяти, допустимо потерять все
+сохраненные данные при перезапуске приложения.
+
+Не обязательно, но будет плюсом:
+Реализовать простейший фронтенд, использующий данное API (можно
+server-side-render на golang/templates, можно любой js-фреймворк: react, vuejs, angular).
+Использовать любые приемы, позволяющих сократить потребление памяти и
+процессорного времени с пояснением (хотя бы в теории).
+Любые тесты, конечно, приветствуются.
+Не используйте название компании нигде в коде или названиях контейнеров
+или ресурсов, адресах.
+
+* Реализация бэкэнда
+
+** Создание короткой ссылки
+
+Как генерировать короткую ссылку?
+Используем адрес "http://localhost:8080?u=" + хэш от введенного длинного
+урла, для которого генерируется короткая ссылка.
+
+Для хэширования используем SHA-256, представляем возвращенный 32-байтовый
+массив как 256 бит. Модифицируем хэш, выполнив над ним Base64 - этот
+алгоритм берет каждые 3 восьмибитных блока и представляет их как 4
+шетибитных блока - остаток байта заполняется нулями. Шесть бит дают 2^6 -
+т.е. 64 возмодных значения (против 16 возможных хэша, полученного с
+помощью SHA-256). Использовать весь хэш - это слишком длинно, обрежем его
+до 4x символов.
+
+#+NAME: _generateShortURL
+#+BEGIN_SRC go :noweb yes
+  func generateShortURL (link string) string {
+
+      sum := sha256.Sum256( []byte( link ) )
+      slice := sum[:]
+      encoded := base64.StdEncoding.EncodeToString(slice)
+
+      return encoded[:hashLength]
+  }
+#+END_SRC
+
+*** Почему именно 4 символа?
+
+Чтоб не брать длину хэша "с потолка", проведем оценку.
+
+Максимальная длина урла составляет 2048 символов, если верить вики:
+https://ru.wikipedia.org/wiki/URL#%D0%9E%D0%B3%D1%80%D0%B0%D0%BD%D0%B8%D1%87%D0%B5%D0%BD%D0%B8%D0%B5_%D0%B4%D0%BB%D0%B8%D0%BD%D1%8B
+ОБычно же урлы гораздо короче.
+
+Представим себе, что мы будем хранить данные (длинную ссылку и хэш от нее
+) в хэш-таблице, занимает 1 гиг, и рассмотрим следующие ситуации:
+
+- урл состоит только ascii-символов. В этом случае каждый символ будет
+  "весить" 1 байт. В худшем случае у нас будет 2000 символов, в лучшем -
+  сам урл не намного будет превышать длину короткой ссылки. Например, в
+  нем будет 40 символов.
+
+  Рассмотрим худший случай: в урле 2000 символов. В каждой записи мы
+  храним его + хэш, в котором, например, 8 символов, +
+  указатели. Получается, что одна запись занимает около
+  2кб. В этом случае в таблицу влезет 524 288 уникальных записей,
+  т.е. необходимо иметь 524 288 уникальных хэшей.
+
+  В лучшем случае длина урла составит 40 символов. Тогда каждая запись
+  таблицы будет содержать в себе 48 байт + указатели. Предположим, что в
+  каждую каждая запись в таком случае будет занимать 64 байта. Тогда в 1
+  гиг влезет 16 777 216 уникальных записей.
+
+  Чтоб сгенерировать такое количество уникальных хэшей, имея 64 вариантов
+  символов, понадобится всего 4 символа - 64^4 = 16 777 216.
+
+- урл состоит из эмодзи-символов - это крайне маловероятно, но
+  теоретически возможно.
+
+  Согласно вот этой https://habr.com/ru/company/itelma/blog/549366/
+  статье, есть сецифические эмодзи, которые являются
+  комбинацией других эмодзи - такие эмодзи называются кластерами
+  графем. Они могут занимать до 22 байт памяти.
+
+   В самом худшем случае, если урл будет иметь длину в 2000 символов и
+   каждый будет занимать по 22 байта, то каждая запись таблицы будет
+   занимать уже более 44 000 байт или 1375 кб. Т.е. в 1 гб влезет только 762
+   записи. В этом случае понадобится всего 2 символа в хэше, чтоб все ссылки
+   были гарнтированно уникальными.
+
+   В случае же если в урле 40 символов и каждый занимает 22 байта, то в
+   хэш-таблицу влезет около 8 388 608.
+
+Таким образом мы видим, что можно легко покрыть нужное кол-во уникальных
+хэшей, имея всего 4 символа.
+
+Разумеется, подобный подсчет  возможен только при допущении, что значения хэш-функции
+распределены равномерно при случайном выборе значений аргумента. Но
+поскольку это одно из требований хэш-функции, то мы считаем, что алгоритм
+SHA-256 выполняет это требование.
+
+** Хранение данных
+
+Есть три связанных друг с другом значения:
+- длинная ссылка
+- короткая ссылка
+- счетчик посещений
+
+Для их хранения я воспользуюсь хэш-таблицей, где ключом будет являться
+уникальный хэш от длинного урла, а значение - это структура, включающая в
+себя длинную ссылку и счетчик посещений. Нет смысла использовать всю
+короткую ссылку в качестве ключа для хэш-таблицы, поскольку уникальность
+ссылки обеспечивает хэш от длинного урла  - в остальном все короткие
+ссылки полностью идентичны.
+
+#+NAME: _data
+#+BEGIN_SRC go :noweb yes
+  <<_pack>>
+
+  type fullUrl struct {
+      Cnt int
+      Url string
+  }
+
+  // таблица ссылок
+  var tableOfLinks = make( map[string]fullUrl )
+
+  <<_getFullUrl>>
+#+END_SRC
+
+Реализуем доступ к длинной ссылке. Если соответствующая ключу запись
+существует, возвращаем ее и статус 303 - т.е. "смотри в другом месте"
+(это понадобится для перенаправления с короткой ссылки на длинную) - или
+же пустую строку и код 404 - т.е. "не найдено".
+
+#+NAME: _getFullUrl
+#+BEGIN_SRC go :noweb yes
+  func getFullUrl( shortUrl string ) (string, int) {
+
+      val, ok := tableOfLinks[shortUrl]
+
+      if ok == true {
+          // увеличивает счетик посещений
+          val.Cnt += 1
+          tableOfLinks[shortUrl] = val
+          return val.Url, 303
+      }
+      return "", 404
+  }
+
+  <<_getLinkCnt>>
+#+END_SRC
+
+А вот таким способ реализуем доступ к счетчику посещений ссылки. В
+случае, если запись для заданного ключа не существует, возващается -1.
+
+#+NAME: _getLinkCnt
+#+BEGIN_SRC go :noweb yes
+  func getLinkCnt( shortUrl string ) int {
+
+      val, ok := tableOfLinks[shortUrl]
+      if ok == true {
+          return val.Cnt
+      }
+      return -1
+  }
+#+END_SRC
+
+** Добавление новой записи в табицу
+
+Это произойдет в том случае, если пользователь захочет получить новую
+короткую ссылку.
+Сервис получит в этом случае вот такой запрос: "?Url=http://www.example.com"
+
+В этом случае:
+- декодируем запрос - это необходимо, потому что символы вроде ~/~ не
+  имеют прямого отображения ASCII-коды, поэтому кодируются особым образом
+
+- отсекаем "?Url=" - нас интересует только урл
+
+- генерируем хэш
+
+- создаем новую запись в таблице
+
+- возвращаем пользователю строку с короткой ссылкой
+
+#+NAME: _registerNewLink
+#+BEGIN_SRC go :noweb yes
+  func registerNewLink( w http.ResponseWriter, r *http.Request ) {
+
+      query, _ := url.QueryUnescape(r.URL.RawQuery)
+
+      if len(query) > 4 {
+          url := query[4:]
+          newStruct := fullUrl{ Url: url }
+          hash := generateShortURL(url)
+          tableOfLinks[hash] = newStruct
+
+          str := fmt.Sprintf("Короткая ссылка для %s - %s \n", url, baseUrl + hash)
+          w.Write([]byte(str))
+
+      } else {
+          w.Write([]byte("Введенный url неполный! \n"))
+      }
+  }
+#+END_SRC
+
+** Перенаправление запросов
+
+В этом случае пользователь вбил в строку баузера
+"http://localhost:8080?u=someHash".
+
+В первую очередь нужно получить хэш из запроса - по нему мы получим
+доступ к соответствующей длинной ссылке, если такая есть. Для этого весь
+запрос целиком должен быть блиннее 4х символов - длины хэша.
+
+#+NAME: _getHashFromRequest
+#+BEGIN_SRC go :noweb yes
+  <<_getHashFromRequestError>>
+
+  func getHashFromRequest( r *http.Request ) (string, error) {
+
+      if (len(r.URL.RawQuery) > hashLength) {
+          return r.URL.RawQuery[len(r.URL.RawQuery)- hashLength:], nil
+
+      } else {
+          err := getHashFromRequestError{s: "Невозможно получить короткую ссылку из запроса \n"}
+          return "", &err
+      }
+  }
+#+END_SRC
+
+Реализация ошибки на случай, если не удалось получить хэш из запроса:
+
+#+NAME: _getHashFromRequestError
+#+BEGIN_SRC go :noweb yes
+  type getHashFromRequestError struct {
+      s string
+  }
+
+  func (e *getHashFromRequestError) Error() string {
+      return e.s
+  }
+#+END_SRC
+
+Если удалось получить хэш, то далее мы:
+
+- декодируем хэш (теоритически он может содержать в себе символы, не
+  имеющие прямого отображения в ASCII-коды)
+
+- пытаемся получить длинную ссылку по текущему ключу
+
+- если все успешно, перенаправляем на ссылку, в противном случае
+  возвращаем NotFound
+
+#+NAME: _redirect
+#+BEGIN_SRC go :noweb yes
+  <<_getHashFromRequest>>
+
+  func redirect( w http.ResponseWriter, r *http.Request ) {
+
+      link, err := getHashFromRequest( r )
+      if err == nil {
+          shortUrl, _ := url.QueryUnescape(link)
+          url, statusCode := getFullUrl( shortUrl )
+
+          if statusCode == 303 {
+              http.Redirect(w, r, url, http.StatusSeeOther)
+
+          } else {
+              http.Redirect(w, r, shortUrl, http.StatusNotFound)
+          }
+      } else {
+          fmt.Println(err)
+      }
+  }
+
+  <<getLinkStatistics>>
+#+END_SRC
+
+** Получение статистики
+
+Здесь все просто:
+
+- получили хэш из запроса
+
+- запросили счетчик посещений
+
+- если счетчик >=, то выводим юзеру статистикув консоль, в противном случае -
+  сообщение об ошибке
+
+#+NAME: _getLinkStatistics
+#+BEGIN_SRC go :noweb yes
+  func getLinkStatistiсs( w http.ResponseWriter, r *http.Request ) {
+
+      hash, err := getHashFromRequest( r )
+
+      if err == nil {
+          encHash, _ := url.QueryUnescape( hash )
+          cnt := getLinkCnt( encHash )
+
+          if cnt >= 0 {
+              fmt.Printf("Адрес %s посещали %d раз \n", baseUrl + encHash, cnt )
+
+          } else {
+              fmt.Printf("Адрес %s не существует в системе\n", baseUrl + encHash )
+          }
+      } else {
+          fmt.Println(err)
+      }
+  }
+
+  <<_sentFront>>
+#+END_SRC
+
+** Подключение фронтэнда
+
+#+NAME: _sentFront
+#+BEGIN_SRC go :noweb yes
+  func sentFront( w http.ResponseWriter, r *http.Request ) {
+      http.ServeFile(w , r, "front.html")
+  }
+#+END_SRC
+
+
+** Пакеты, константы
+
+#+NAME: _pack
+#+BEGIN_SRC go :noweb yes
+  package main
+
+  import
+  (
+      "crypto/sha256"
+      "fmt"
+      "net/http"
+      "encoding/base64"
+      "net/url"
+  )
+
+  const hashLength = 4
+  const baseUrl = "http://localhost:8080/?u="
+#+END_SRC
+
+** main
+
+- создаем структуру сервера
+- запускаем 4 обработчика запросов
+- запускаем сервер
+
+#+NAME: _main
+#+BEGIN_SRC go :noweb yes
+  <<_registerNewLink>>
+
+  <<_redirect>>
+
+  func main () {
+
+      s := &http.Server{
+          Addr:           ":8080",
+      }
+
+      // обработчики запросов:
+      // - перейти по короткой ссылке
+      http.HandleFunc("/", redirect)
+      // - запросить хтмл
+      http.HandleFunc("/serv_link/", sentFront)
+      // - получить новую короткую ссылку
+      http.HandleFunc("/reg_new_link/", registerNewLink)
+      // - получить статистику переходов по короткой ссылке
+      http.HandleFunc("/get_link_statistiсs/", getLinkStatistiсs)
+
+      //запускаем сервер
+      s.ListenAndServe()
+  }
+#+END_SRC
+
+#+NAME: tangle
+#+BEGIN_SRC asm :tangle servShortLink.go :noweb tangle :exports code :padline no :comments none
+  <<_data>>
+  <<_generateShortURL>>
+  <<_getLinkStatistics>>
+  <<_main>>
+#+END_SRC
+
+* Реализация фронтенда
+
+Фронтенд состоит из двух форм, которые отправляют get-запросы
+соответствующим хэндлерам.
+
+Первая форма позволяет отправить запрос на создание новой короткой ссылки
+для заданного адреса. Вторая - отправляет запрос на получение статистики
+посещений для введенной короткой ссылки.
+
+Если же пользователь хочет пройти по короткой ссылке, ему просто стоит
+ввести ее в браузере.
+
+#+NAME: _front
+#+BEGIN_SRC html :noweb yes :tangle front.html
+  <html>
+      <head>
+          <title> Сервис коротких ссылок </title>
+      </head>
+      <body>
+          <form   action="http://localhost:8080/reg_new_link/"
+                  method="get" >
+              <label for="reg_new_link">Получить короткую ссылку:</label>
+              <input align="center" type="text" name="Url"
+                     placeholder="Введите полный  Url">
+              <button type="submit">submit</button>
+          </form>
+      </body>
+  </html>
+
+#+END_SRC
+
+* Реализация тестов
+
+Тесты проверяют:
+- создание новой короткой ссылки для заданного урла
+- получение статистики переходов по короткой ссылке
+- перенаправление с короткой ссылки для полную
+- обработку ошибки в случае, если был задан пустой урл при попытке
+  получить новую короткую ссылку
+
+Все тесты выполняются на адресе "https://www.google.com".
+
+Импортируем пакеты:
+#+NAME: _test_pack
+#+BEGIN_SRC go :noweb yes :tangle servShortLink_test.go
+  package main
+
+  import
+  (
+      "net/http"
+      "net/http/httptest"
+      "testing"
+      "io"
+  )
+
+  <<_redirectTest>>
+#+END_SRC
+
+Проверяет результат перенаправления с заданного короткого урла на
+длинный, если таковой есть. Самое простое - это проверить статус, который
+возвращает сервис. Если он соответствует ожидаемому, тест проходит.
+
+#+NAME: _redirectTest
+#+BEGIN_SRC go :noweb yes
+  // проверяет перенаправление с короткого урла на
+  func redirectTest( t *testing.T, link string, expectedStatus int) {
+      req, err := http.NewRequest("GET", "/" + "?Url=" + link, nil)
+
+      if err != nil {
+          t.Fatal(err)
+      }
+
+      rr := httptest.NewRecorder()
+      handler := http.HandlerFunc(redirect)
+
+      handler.ServeHTTP(rr, req)
+
+      if status := rr.Code; status != expectedStatus {
+          t.Errorf("Возвращен неверный статус: получил %v ожидал %v",
+              status, expectedStatus)
+      }
+  }
+
+  <<_getCntGoogleCom>>
+#+END_SRC
+
+Проверяет перенаправление при заданной несуществующей короткой ссылке.
+#+NAME: _TestRedirectNotExistingLink
+#+BEGIN_SRC go :noweb yes
+  // проверяет перенаправление на длинный урл при заданной несуществующей в системе
+  // короткой ссылке
+  func TestRedirectNotExistingLink( t *testing.T ) {
+      redirectTest(t, "http://www.some_website.ru", http.StatusNotFound )
+  }
+
+#+END_SRC
+
+Проверяет счетчик посещения ссылки. В качестве параметра принимает
+ожидаемую строку - это позволяет тестировать счетчик в 2х ситуациях:
+
+- была передана несуществующая короткая ссылка [TODO:gmm]
+- было совершено n переходов по ссылке и мы хотим проверить, что это
+  корректно отражено счетчиком
+
+#+NAME: _getCntGoogleCom
+#+BEGIN_SRC go :noweb yes
+  func getCntGoogleCom( t *testing.T, expected string ) {
+      req, err := http.NewRequest("GET", "/get_link_statistiсs/" + "?Url=" + "http://localhost:8080/?u=rGu2", nil)
+
+      if err != nil {
+          t.Fatal(err)
+      }
+
+      rr := httptest.NewRecorder()
+      handler := http.HandlerFunc(getLinkStatistiсs)
+
+      handler.ServeHTTP(rr, req)
+
+      body, err := io.ReadAll(rr.Body)
+      if err != nil {
+          t.Fatal(err)
+      }
+      got := string(body)
+
+      if expected != got {
+          t.Errorf("ожидал: %v получил: %v",
+              expected, got)
+      }
+  }
+
+  <<_TestGoogleCom>>
+#+END_SRC
+
+Данный тест проверяет:
+- регистрацию нового длинного урла в системе - в нашем случае это адрес google.com
+- значение счетчика до перехода по короткой ссылке (должно быть 0)
+- переход по короткой ссылке
+- значение после перехода по короткой ссылке (должно быть 1)
+
+#+NAME: _TestGoogleCom
+#+BEGIN_SRC go :noweb yes
+  // проверяет:
+  // - получение короткой ссылки для google.com
+  // - состояние счетчика посещений сразу после получения короткой ссылки (должно быть 0)
+  // - перенаправление с короткой ссылки на google.com
+  // - состояние счетчика посещений после перенаправления (должно быть 1 посещение)
+  func TestGoogleCom(t *testing.T) {
+      req, err := http.NewRequest("GET", "/reg_new_link/" + "?Url=" + "https://www.google.com", nil)
+
+      if err != nil {
+          t.Fatal(err)
+      }
+
+      rr := httptest.NewRecorder()
+      handler := http.HandlerFunc(registerNewLink)
+
+      handler.ServeHTTP(rr, req)
+
+      if status := rr.Code; status != http.StatusOK {
+          t.Errorf("Возвращен неверный статус: получил %v ожидал %v",
+              status, http.StatusOK)
+
+      } else {
+          body, err := io.ReadAll(rr.Body)
+
+          if err != nil {
+              t.Fatal(err)
+          }
+
+          expected:= "Короткая ссылка для https://www.google.com - http://localhost:8080/?u=rGu2 \n"
+          got := string(body)
+
+          if expected != got {
+              t.Errorf("ожидал: %v получил: %v",
+                  expected, got)
+          }
+
+          getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 0 раз \n")
+          redirectTest(t, "http://localhost:8080/?u=rGu2", http.StatusSeeOther )
+          getCntGoogleCom(t, "Адрес http://localhost:8080/?u=rGu2 посещали 1 раз \n")
+      }
+  }
+
+  <<_TestEmptyUrl>>
+  <<_TestRedirectNotExistingLink>>
+#+END_SRC
+
+#+NAME: _TestEmptyUrl
+#+BEGIN_SRC go :noweb yes
+  // проверяет возвращаемую ошибку, есть дать пустой длинный урл
+  func TestEmptyUrl(t *testing.T) {
+      req, err := http.NewRequest("GET", "/reg_new_link/", nil)
+      if err != nil {
+          t.Fatal(err)
+      }
+
+      rr := httptest.NewRecorder()
+      handler := http.HandlerFunc(registerNewLink)
+
+      handler.ServeHTTP(rr, req)
+
+      if status := rr.Code; status != http.StatusOK {
+          t.Errorf("Возвращен неверный статус: получил %v ожидал %v",
+              status, http.StatusOK)
+
+      } else {
+          body, err := io.ReadAll(rr.Body)
+
+          if err != nil {
+              t.Fatal(err)
+          }
+
+          expected:= "Введенный url неполный! \n"
+          got := string(body)
+
+          if expected != got {
+              t.Errorf("ожидал: %v получил: %v",
+                  expected, got)
+          }
+      }
+  }
+
+#+END_SRC
